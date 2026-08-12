@@ -673,7 +673,25 @@
       if(error) throw error;
 
       const retorno = Array.isArray(data) ? data[0] : data;
-      const statusReal = String(retorno?.status || 'AGENDADO').toUpperCase();
+
+      // A RPC de criação pode manter um retorno legado "AGENDADO".
+      // Para a mensagem ao cliente, usamos o status REAL persistido na tabela.
+      let statusReal = String(retorno?.status || 'AGENDADO').toUpperCase();
+      const agendamentoId = retorno?.agendamento_id || retorno?.id || null;
+
+      if(agendamentoId){
+        try{
+          const {data:statusData,error:statusError} = await db.rpc('agendamento_publico_status',{
+            p_agendamento_id:agendamentoId
+          });
+          if(statusError) throw statusError;
+          const statusRow = Array.isArray(statusData) ? statusData[0] : statusData;
+          if(statusRow?.status) statusReal = String(statusRow.status).toUpperCase();
+        }catch(statusErr){
+          console.warn('Não foi possível consultar o status real do agendamento:', statusErr);
+        }
+      }
+
       const solicitado = statusReal === 'SOLICITADO';
 
       document.querySelectorAll('.etapa').forEach(el => el.hidden = true);
