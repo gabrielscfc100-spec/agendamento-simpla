@@ -325,9 +325,15 @@
 
     <section class="card sucesso" id="etapa-sucesso" hidden>
       <div class="icone">✓</div>
-      <h2>Agendamento realizado!</h2>
-      <p id="sucesso-texto">Seu horário foi reservado com sucesso.</p>
-      <button class="btn btn-pri" onclick="novoAgendamento()">Fazer outro agendamento</button>
+      <h2 id="sucesso-titulo">Agendamento realizado!</h2>
+      <p id="sucesso-status" style="font-weight:700;margin-bottom:8px;"></p>
+      <p id="sucesso-texto">Seu horário foi registrado com sucesso.</p>
+      <div id="sucesso-orientacao" class="status show info" style="margin:14px 0;text-align:left;"></div>
+      <div class="acoes" style="justify-content:center;flex-wrap:wrap;">
+        <a id="btn-whatsapp-agendamento" class="btn btn-pri" href="#" target="_blank" rel="noopener noreferrer"
+           style="display:none;text-decoration:none;background:#25D366;">💬 Enviar agendamento pelo WhatsApp</a>
+        <button class="btn btn-sec" onclick="novoAgendamento()">Fazer outro agendamento</button>
+      </div>
     </section>
   </main>
 
@@ -350,7 +356,8 @@
     horario:'',
     nome:'',
     telefone:'',
-    email:''
+    email:'',
+    whatsappEmpresa:''
   };
 
   function setStatus(id, texto='', tipo='info'){
@@ -396,7 +403,42 @@
     return Number(v || 0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
   }
 
+  function normalizarWhatsAppEmpresa(valor){
+    let n = String(valor || '').replace(/\D/g,'');
+    if(!n) return '';
+    if(n.startsWith('55') && n.length >= 12) return n;
+    if(n.length === 10 || n.length === 11) return `55${n}`;
+    return n;
+  }
+
+  function configurarWhatsappSucesso(){
+    const btn = document.getElementById('btn-whatsapp-agendamento');
+    if(!btn) return;
+    const numero = normalizarWhatsAppEmpresa(state.whatsappEmpresa);
+    if(!numero){
+      btn.style.display = 'none';
+      btn.removeAttribute('href');
+      return;
+    }
+    const msg = `Olá! Realizei um agendamento pelo SimplA para ${dataPt(state.data)}, às ${state.horario}, com ${state.profissional?.nome || 'o profissional'}, para o serviço ${state.servico?.nome || ''}.`;
+    btn.href = `https://wa.me/${numero}?text=${encodeURIComponent(msg)}`;
+    btn.style.display = 'inline-flex';
+  }
+
+  async function carregarContatoPublico(){
+    try{
+      const {data,error} = await db.rpc('agendamento_publico_contato',{p_slug:slug});
+      if(error) throw error;
+      const retorno = Array.isArray(data) ? data[0] : data;
+      state.whatsappEmpresa = retorno?.whatsapp_empresa || '';
+    }catch(err){
+      console.warn('Contato público não disponível:', err);
+      state.whatsappEmpresa = '';
+    }
+  }
+
   async function iniciar(){
+    await carregarContatoPublico();
     document.getElementById('cliente-telefone').addEventListener('input', e => {
       e.target.value = formatarTelefoneInput(e.target.value);
     });
@@ -631,11 +673,25 @@
       if(error) throw error;
 
       const retorno = Array.isArray(data) ? data[0] : data;
+      const statusReal = String(retorno?.status || 'AGENDADO').toUpperCase();
+      const solicitado = statusReal === 'SOLICITADO';
+
       document.querySelectorAll('.etapa').forEach(el => el.hidden = true);
       document.getElementById('etapa-sucesso').hidden = false;
       document.querySelectorAll('.step').forEach(el => el.classList.add('on'));
+
+      document.getElementById('sucesso-titulo').textContent =
+        solicitado ? 'Solicitação de agendamento recebida!' : 'Agendamento confirmado!';
+      document.getElementById('sucesso-status').textContent =
+        solicitado ? '⏳ AGUARDANDO CONFIRMAÇÃO DA EQUIPE' : '✓ HORÁRIO CONFIRMADO';
       document.getElementById('sucesso-texto').textContent =
         `${state.profissional.nome} • ${state.servico.nome} • ${dataPt(state.data)} às ${state.horario}.`;
+      document.getElementById('sucesso-orientacao').textContent =
+        solicitado
+          ? 'Seu pedido foi registrado, mas o horário ainda não está confirmado. A equipe fará a validação do agendamento. Você pode usar o botão abaixo para avisar o estabelecimento pelo WhatsApp.'
+          : 'Seu horário já está confirmado. Se desejar, use o botão abaixo para enviar os dados do agendamento ao estabelecimento pelo WhatsApp.';
+
+      configurarWhatsappSucesso();
       setStatus('status-confirmacao');
       window.scrollTo({top:0,behavior:'smooth'});
       console.log('Agendamento criado:', retorno);
