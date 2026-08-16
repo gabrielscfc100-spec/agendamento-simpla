@@ -135,6 +135,78 @@
       grid-template-columns:repeat(4,minmax(0,1fr));
       gap:9px;
     }
+
+    .calendario-wrap{
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:14px;
+      background:#fff;
+      margin-bottom:18px;
+    }
+    .calendario-topo{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      margin-bottom:12px;
+    }
+    .calendario-topo strong{
+      font-size:15px;
+      text-transform:none;
+      text-align:center;
+      flex:1;
+    }
+    .calendario-nav{
+      width:38px;
+      height:38px;
+      border:1px solid var(--line);
+      border-radius:9px;
+      background:#fff;
+      cursor:pointer;
+      font-weight:800;
+      color:var(--text);
+    }
+    .calendario-nav:disabled{opacity:.35;cursor:not-allowed}
+    .calendario-semana,.calendario-dias{
+      display:grid;
+      grid-template-columns:repeat(7,minmax(0,1fr));
+      gap:6px;
+    }
+    .calendario-semana span{
+      text-align:center;
+      font-size:10px;
+      color:var(--muted);
+      font-weight:800;
+      padding:4px 0;
+    }
+    .cal-dia{
+      min-height:44px;
+      border:1px solid var(--line);
+      border-radius:9px;
+      background:#fff;
+      color:var(--text);
+      cursor:pointer;
+      font-weight:700;
+    }
+    .cal-dia:hover:not(:disabled){border-color:var(--accent)}
+    .cal-dia.indisponivel,.cal-dia:disabled{
+      background:#f1f3f5;
+      color:#a0aec0;
+      cursor:not-allowed;
+      border-color:#edf2f7;
+    }
+    .cal-dia.selecionado{
+      background:var(--dark);
+      border-color:var(--dark);
+      color:#fff;
+    }
+    .cal-dia.vazio{visibility:hidden}
+    .calendario-legenda{
+      margin-top:10px;
+      font-size:11px;
+      color:var(--muted);
+      text-transform:none;
+    }
     .horario{
       min-height:44px;
       border:1px solid var(--line);
@@ -301,10 +373,21 @@
     <section class="card etapa" id="etapa-4" hidden>
       <h3 class="titulo">Data e horário</h3>
       <p class="ajuda">Os horários indisponíveis, bloqueados ou já ultrapassados não são exibidos.</p>
-      <div style="max-width:260px;margin-bottom:16px;">
-        <label for="agenda-data">Data *</label>
-        <input id="agenda-data" type="date" onchange="carregarHorarios()">
+      <div class="calendario-wrap">
+        <div class="calendario-topo">
+          <button id="cal-prev" class="calendario-nav" type="button" onclick="mudarMesCalendario(-1)" aria-label="Mês anterior">‹</button>
+          <strong id="cal-mes-label">Carregando calendário...</strong>
+          <button id="cal-next" class="calendario-nav" type="button" onclick="mudarMesCalendario(1)" aria-label="Próximo mês">›</button>
+        </div>
+        <div class="calendario-semana">
+          <span>DOM</span><span>SEG</span><span>TER</span><span>QUA</span><span>QUI</span><span>SEX</span><span>SÁB</span>
+        </div>
+        <div id="cal-dias" class="calendario-dias"></div>
+        <div class="calendario-legenda">
+          Apenas dias com pelo menos um horário disponível podem ser selecionados.
+        </div>
       </div>
+      <input id="agenda-data" type="hidden">
       <div id="lista-horarios" class="horarios"></div>
       <div class="acoes">
         <button class="btn btn-sec" onclick="mostrarEtapa(3)">Voltar</button>
@@ -386,6 +469,26 @@
     return `(${n.slice(0,2)}) ${n.slice(2,7)}-${n.slice(7)}`;
   }
 
+  function horarioParaMinutos(horario){
+    const partes = String(horario || '').slice(0,5).split(':').map(Number);
+    return (partes[0] || 0) * 60 + (partes[1] || 0);
+  }
+
+  function horarioConflitaBloqueioPublico(horario, duracaoMin, bloqueios){
+    const inicio = horarioParaMinutos(horario);
+    const fim = inicio + Number(duracaoMin || 0);
+
+    return (bloqueios || []).some(b => {
+      const escopo = String(b.escopo || '').toUpperCase();
+      if(escopo === 'DIA_INTEIRO') return true;
+      if(escopo !== 'INTERVALO') return false;
+
+      const inicioBloqueio = horarioParaMinutos(b.hora_inicio);
+      const fimBloqueio = horarioParaMinutos(b.hora_fim);
+      return inicio < fimBloqueio && fim > inicioBloqueio;
+    });
+  }
+
   function hojeLocal(){
     const d = new Date();
     const y = d.getFullYear();
@@ -442,7 +545,6 @@
     document.getElementById('cliente-telefone').addEventListener('input', e => {
       e.target.value = formatarTelefoneInput(e.target.value);
     });
-    document.getElementById('agenda-data').min = hojeLocal();
 
     try{
       const {data,error} = await db.rpc('agendamento_publico_empresa',{p_slug:slug});
@@ -569,14 +671,153 @@
     }
   }
 
+  let calendarioMesAtual = null;
+  let calendarioCarregando = false;
+  const cacheDiasDisponiveis = new Map();
+
+  function primeiroDiaMes(date){
+    return new Date(date.getFullYear(), date.getMonth(), 1);
+  }
+
+  function chaveMes(date){
+    return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`;
+  }
+
+  function dataIsoLocal(date){
+    return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+  }
+
+  function ultimoDiaMes(date){
+    return new Date(date.getFullYear(), date.getMonth()+1, 0);
+  }
+
+  function nomeMesAno(date){
+    const nome = date.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
+    return nome.charAt(0).toUpperCase() + nome.slice(1);
+  }
+
+  async function obterDiasDisponiveisMes(mes){
+    const cacheKey = `${state.profissional?.id || ''}|${state.servico?.id || ''}|${chaveMes(mes)}`;
+    if(cacheDiasDisponiveis.has(cacheKey)) return cacheDiasDisponiveis.get(cacheKey);
+
+    const inicio = primeiroDiaMes(mes);
+    const fim = ultimoDiaMes(mes);
+    const hoje = hojeLocal();
+    const inicioIso = dataIsoLocal(inicio) < hoje ? hoje : dataIsoLocal(inicio);
+    const fimIso = dataIsoLocal(fim);
+
+    if(inicioIso > fimIso){
+      const vazio = new Set();
+      cacheDiasDisponiveis.set(cacheKey,vazio);
+      return vazio;
+    }
+
+    const {data,error} = await db.rpc('agendamento_publico_dias_disponiveis',{
+      p_slug:slug,
+      p_profissional_id:state.profissional.id,
+      p_servico_id:state.servico.id,
+      p_duracao_min:Number(state.servico?.duracao_min || 0),
+      p_data_inicio:inicioIso,
+      p_data_fim:fimIso
+    });
+    if(error) throw error;
+
+    const set = new Set((data || []).map(r => String(r.data || '').slice(0,10)));
+    cacheDiasDisponiveis.set(cacheKey,set);
+    return set;
+  }
+
+  async function renderizarCalendario(){
+    if(calendarioCarregando) return;
+    calendarioCarregando = true;
+
+    const area = document.getElementById('cal-dias');
+    const label = document.getElementById('cal-mes-label');
+    const prev = document.getElementById('cal-prev');
+
+    if(!calendarioMesAtual) calendarioMesAtual = primeiroDiaMes(new Date());
+    if(label) label.textContent = nomeMesAno(calendarioMesAtual);
+    if(area) area.innerHTML = '<div class="vazio" style="grid-column:1/-1;">Consultando disponibilidade...</div>';
+
+    const mesHoje = primeiroDiaMes(new Date());
+    if(prev) prev.disabled = calendarioMesAtual <= mesHoje;
+
+    try{
+      const disponiveis = await obterDiasDisponiveisMes(calendarioMesAtual);
+      const primeiro = primeiroDiaMes(calendarioMesAtual);
+      const ultimo = ultimoDiaMes(calendarioMesAtual);
+      const hoje = hojeLocal();
+
+      area.innerHTML = '';
+
+      for(let i=0;i<primeiro.getDay();i++){
+        const vazio = document.createElement('button');
+        vazio.type = 'button';
+        vazio.className = 'cal-dia vazio';
+        vazio.disabled = true;
+        area.appendChild(vazio);
+      }
+
+      for(let dia=1; dia<=ultimo.getDate(); dia++){
+        const d = new Date(calendarioMesAtual.getFullYear(), calendarioMesAtual.getMonth(), dia);
+        const iso = dataIsoLocal(d);
+        const temVaga = iso >= hoje && disponiveis.has(iso);
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `cal-dia ${temVaga ? 'disponivel' : 'indisponivel'}`;
+        btn.textContent = String(dia);
+        btn.disabled = !temVaga;
+        btn.title = temVaga ? 'Horários disponíveis' : 'Sem horários disponíveis';
+
+        if(state.data === iso && temVaga) btn.classList.add('selecionado');
+        if(temVaga) btn.onclick = () => selecionarDiaCalendario(iso);
+
+        area.appendChild(btn);
+      }
+    }catch(err){
+      console.error(err);
+      area.innerHTML = `<div class="vazio" style="grid-column:1/-1;color:#c53030;">${escapeHtml(err?.message || 'Não foi possível carregar o calendário.')}</div>`;
+    }finally{
+      calendarioCarregando = false;
+    }
+  }
+
+  async function selecionarDiaCalendario(dataIso){
+    state.data = dataIso;
+    state.horario = '';
+    document.getElementById('agenda-data').value = dataIso;
+    document.getElementById('btn-horario').disabled = true;
+    await renderizarCalendario();
+    await carregarHorarios();
+  }
+
+  function mudarMesCalendario(delta){
+    if(calendarioCarregando || !calendarioMesAtual) return;
+    const novo = new Date(calendarioMesAtual.getFullYear(), calendarioMesAtual.getMonth()+delta, 1);
+    const mesHoje = primeiroDiaMes(new Date());
+    if(novo < mesHoje) return;
+
+    calendarioMesAtual = novo;
+    state.data = '';
+    state.horario = '';
+    document.getElementById('agenda-data').value = '';
+    document.getElementById('lista-horarios').innerHTML = '<div class="vazio" style="grid-column:1/-1;">Selecione um dia disponível.</div>';
+    document.getElementById('btn-horario').disabled = true;
+    renderizarCalendario();
+  }
+
   function irParaData(){
     if(!state.servico) return;
     state.data = '';
     state.horario = '';
+    cacheDiasDisponiveis.clear();
+    calendarioMesAtual = primeiroDiaMes(new Date());
     document.getElementById('agenda-data').value = '';
-    document.getElementById('lista-horarios').innerHTML = '<div class="vazio" style="grid-column:1/-1;">Escolha uma data para ver os horários.</div>';
+    document.getElementById('lista-horarios').innerHTML = '<div class="vazio" style="grid-column:1/-1;">Selecione um dia disponível.</div>';
     document.getElementById('btn-horario').disabled = true;
     mostrarEtapa(4);
+    renderizarCalendario();
   }
 
   async function carregarHorarios(){
@@ -598,17 +839,36 @@
     area.innerHTML = '<div class="vazio" style="grid-column:1/-1;">Consultando agenda...</div>';
 
     try{
-      const {data,error} = await db.rpc('agendamento_publico_horarios',{
-        p_slug:slug,
-        p_profissional_id:state.profissional.id,
-        p_servico_id:state.servico.id,
-        p_data:dataEscolhida
+      const [horariosResp, bloqueiosResp] = await Promise.all([
+        db.rpc('agendamento_publico_horarios',{
+          p_slug:slug,
+          p_profissional_id:state.profissional.id,
+          p_servico_id:state.servico.id,
+          p_data:dataEscolhida
+        }),
+        db.rpc('agendamento_publico_bloqueios',{
+          p_slug:slug,
+          p_profissional_id:state.profissional.id,
+          p_data:dataEscolhida
+        })
+      ]);
+
+      if(horariosResp.error) throw horariosResp.error;
+      if(bloqueiosResp.error) throw bloqueiosResp.error;
+
+      const bloqueiosAplicaveis = bloqueiosResp.data || [];
+      const duracaoServico = Number(state.servico?.duracao_min || 0);
+      const lista = (horariosResp.data || []).filter(item => {
+        const hora = String(item.horario || '').slice(0,5);
+        return !horarioConflitaBloqueioPublico(hora, duracaoServico, bloqueiosAplicaveis);
       });
-      if(error) throw error;
-      const lista = data || [];
 
       if(!lista.length){
         area.innerHTML = '<div class="vazio" style="grid-column:1/-1;">Não há horários disponíveis nesta data.</div>';
+        state.data = '';
+        document.getElementById('agenda-data').value = '';
+        cacheDiasDisponiveis.clear();
+        renderizarCalendario();
         return;
       }
 
@@ -716,12 +976,27 @@
     }catch(err){
       console.error(err);
       const msg = err?.message || 'Não foi possível concluir o agendamento.';
-      setStatus('status-confirmacao', msg, 'erro');
 
-      // Horário pode ter sido ocupado por outra pessoa. Recarrega a disponibilidade.
-      if(/hor[aá]rio|dispon[ií]vel|ocupado/i.test(msg)){
+      if(String(msg).includes('HORARIO_BLOQUEADO_SIMPLA')){
+        setStatus(
+          'status-confirmacao',
+          'Este horário ficou indisponível enquanto você realizava o agendamento. Escolha outro horário.',
+          'erro'
+        );
         document.getElementById('btn-horario').disabled = true;
         state.horario = '';
+        setTimeout(() => {
+          mostrarEtapa(4);
+          carregarHorarios();
+        }, 900);
+      } else {
+        setStatus('status-confirmacao', msg, 'erro');
+
+        // Horário pode ter sido ocupado por outra pessoa. Recarrega a disponibilidade.
+        if(/hor[aá]rio|dispon[ií]vel|ocupado/i.test(msg)){
+          document.getElementById('btn-horario').disabled = true;
+          state.horario = '';
+        }
       }
     }finally{
       btn.disabled = false;
