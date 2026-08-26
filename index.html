@@ -118,10 +118,13 @@
         <h3 class="titulo">Digite o código</h3><p class="ajuda">Informe o código de 6 dígitos enviado para o e-mail <strong id="portal-email-resumo"></strong>.</p>
         <label for="portal-codigo-input">Código de verificação</label><input id="portal-codigo-input" class="portal-codigo" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000">
         <div class="acoes"><button class="btn btn-sec" onclick="reiniciarPortal()">Alterar e-mail</button><button id="btn-validar-codigo" class="btn btn-pri" onclick="validarCodigoPortal()">Continuar</button></div>
+        <div style="text-align:center;margin-top:12px">
+          <button id="btn-reenviar-codigo" type="button" class="btn btn-sec" style="min-height:38px;padding:8px 14px;font-size:12px" onclick="reenviarCodigoPortal()" disabled>Reenviar código em 60s</button>
+        </div>
       </section>
 
       <section id="portal-perfis" class="card portal-box" hidden>
-        <h3 class="titulo">Quem está acessando?</h3><p class="ajuda">Encontramos mais de um perfil vinculado a este telefone. Selecione o perfil para continuar.</p><div id="portal-lista-perfis" class="portal-perfis"></div>
+        <h3 class="titulo">Quem está acessando?</h3><p class="ajuda">Encontramos mais de um perfil vinculado a este e-mail. Selecione o perfil para continuar.</p><div id="portal-lista-perfis" class="portal-perfis"></div>
       </section>
 
       <section id="portal-agendamentos" class="card" hidden>
@@ -138,7 +141,7 @@
   const params=new URLSearchParams(window.location.search);
   const slug=(params.get('empresa')||params.get('slug')||'simpla-barbearia').trim().toLowerCase();
   const state={empresa:null,profissional:null,servico:null,data:'',horario:'',nome:'',telefone:'',email:'',whatsappEmpresa:''};
-  const portalState={email:'',selecaoToken:null};
+  const portalState={email:'',selecaoToken:null,reenvioTimer:null};
 
   function setStatus(id,texto='',tipo='info'){const el=document.getElementById(id);if(!el)return;el.className='status';el.textContent=texto;if(texto)el.classList.add('show',tipo)}
   function escapeHtml(valor){return String(valor??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#039;")}
@@ -177,10 +180,100 @@
   function novoAgendamento(){Object.assign(state,{profissional:null,servico:null,data:'',horario:'',email:''});document.getElementById('cliente-nome').value='';document.getElementById('cliente-telefone').value='';document.getElementById('cliente-email').value='';abrirAgendamento();mostrarEtapa(1)}
 
   async function chamarFuncaoPortal(nome,body){const resp=await fetch(`${SUPABASE_URL}/functions/v1/${nome}`,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify(body)});let data={};try{data=await resp.json()}catch{}if(!resp.ok||data.ok===false)throw new Error(data.error||'Não foi possível concluir a solicitação.');return data}
-  function mostrarPortalTela(id){['portal-telefone','portal-codigo','portal-perfis','portal-agendamentos'].forEach(x=>document.getElementById(x).hidden=x!==id)}
-  function reiniciarPortal(limparStatus=true){portalState.email='';portalState.selecaoToken=null;document.getElementById('portal-email-input').value='';document.getElementById('portal-codigo-input').value='';document.getElementById('portal-lista-perfis').innerHTML='';mostrarPortalTela('portal-telefone');if(limparStatus)setStatus('portal-status')}
-  async function solicitarCodigoPortal(){if(!state.empresa?.id){setStatus('portal-status','A empresa ainda não foi carregada.','erro');return}const input=document.getElementById('portal-email-input'),email=input.value.trim().toLowerCase();if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){setStatus('portal-status','Informe um e-mail válido.','erro');return}const btn=document.getElementById('btn-portal-codigo');btn.disabled=true;btn.textContent='Enviando...';setStatus('portal-status','Solicitando código de verificação...','info');try{const r=await chamarFuncaoPortal('portal-solicitar-codigo',{empresa_id:state.empresa.id,email});portalState.email=email;document.getElementById('portal-email-resumo').textContent=email;mostrarPortalTela('portal-codigo');setStatus('portal-status',r.modo_envio==='teste'?'Código gerado em modo de teste. Configure o provedor de e-mail para envio real.':'Código enviado para seu e-mail. Digite os 6 números para continuar.',r.modo_envio==='teste'?'info':'ok');document.getElementById('portal-codigo-input').focus()}catch(err){setStatus('portal-status',err.message,'erro')}finally{btn.disabled=false;btn.textContent='Receber código'}}
-  async function validarCodigoPortal(){const codigo=document.getElementById('portal-codigo-input').value.replace(/\D/g,'');if(codigo.length!==6){setStatus('portal-status','Digite o código de 6 dígitos.','erro');return}const btn=document.getElementById('btn-validar-codigo');btn.disabled=true;btn.textContent='Validando...';try{const r=await chamarFuncaoPortal('portal-validar-codigo',{empresa_id:state.empresa.id,email:portalState.email,codigo});if(r.precisa_selecionar_perfil){portalState.selecaoToken=r.selecao_token;renderizarPerfisPortal(r.perfis||[]);mostrarPortalTela('portal-perfis');setStatus('portal-status','Telefone verificado. Selecione o perfil que deseja acessar.','ok')}else if(r.token){salvarSessaoPortal(r.token,r.expira_em,r.cliente);await carregarMeusAgendamentos()}}catch(err){setStatus('portal-status',err.message,'erro')}finally{btn.disabled=false;btn.textContent='Continuar'}}
+  function mostrarPortalTela(id){['portal-telefone','portal-codigo','portal-perfis','portal-agendamentos'].forEach(x=>document.getElementById(x).hidden=x!==id);if(id==='portal-codigo')setTimeout(restaurarContagemReenvio,0)}
+  
+  function pararContagemReenvio(){
+    if(portalState.reenvioTimer){
+      clearInterval(portalState.reenvioTimer);
+      portalState.reenvioTimer=null;
+    }
+  }
+
+  function iniciarContagemReenvio(segundos=60){
+    pararContagemReenvio();
+    const btn=document.getElementById('btn-reenviar-codigo');
+    if(!btn)return;
+
+    const chave='simpla_portal_otp_ultimo_envio';
+    let fim=Date.now()+segundos*1000;
+    sessionStorage.setItem(chave,String(fim));
+
+    const atualizar=()=>{
+      const restante=Math.max(0,Math.ceil((fim-Date.now())/1000));
+      if(restante>0){
+        btn.disabled=true;
+        btn.textContent=`Reenviar código em ${restante}s`;
+      }else{
+        pararContagemReenvio();
+        sessionStorage.removeItem(chave);
+        btn.disabled=false;
+        btn.textContent='Reenviar código';
+      }
+    };
+
+    atualizar();
+    portalState.reenvioTimer=setInterval(atualizar,1000);
+  }
+
+  function restaurarContagemReenvio(){
+    const btn=document.getElementById('btn-reenviar-codigo');
+    if(!btn)return;
+    const fim=Number(sessionStorage.getItem('simpla_portal_otp_ultimo_envio')||0);
+    if(fim>Date.now()){
+      const segundos=Math.ceil((fim-Date.now())/1000);
+      iniciarContagemReenvio(segundos);
+    }else{
+      btn.disabled=false;
+      btn.textContent='Reenviar código';
+      sessionStorage.removeItem('simpla_portal_otp_ultimo_envio');
+    }
+  }
+
+function reiniciarPortal(limparStatus=true){pararContagemReenvio();sessionStorage.removeItem('simpla_portal_otp_ultimo_envio');portalState.email='';portalState.selecaoToken=null;document.getElementById('portal-email-input').value='';document.getElementById('portal-codigo-input').value='';document.getElementById('portal-lista-perfis').innerHTML='';mostrarPortalTela('portal-telefone');if(limparStatus)setStatus('portal-status')}
+  async function solicitarCodigoPortal(){if(!state.empresa?.id){setStatus('portal-status','A empresa ainda não foi carregada.','erro');return}const input=document.getElementById('portal-email-input'),email=input.value.trim().toLowerCase();if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){setStatus('portal-status','Informe um e-mail válido.','erro');return}const btn=document.getElementById('btn-portal-codigo');btn.disabled=true;btn.textContent='Enviando...';setStatus('portal-status','Solicitando código de verificação...','info');try{const r=await chamarFuncaoPortal('portal-solicitar-codigo',{empresa_id:state.empresa.id,email});portalState.email=email;document.getElementById('portal-email-resumo').textContent=email;mostrarPortalTela('portal-codigo');setStatus('portal-status',r.modo_envio==='teste'?'Código gerado em modo de teste. Configure o provedor de e-mail para envio real.':'Código enviado para seu e-mail. Digite os 6 números para continuar.',r.modo_envio==='teste'?'info':'ok');document.getElementById('portal-codigo-input').focus();iniciarContagemReenvio(60)}catch(err){setStatus('portal-status',err.message,'erro')}finally{btn.disabled=false;btn.textContent='Receber código'}}
+  
+  async function reenviarCodigoPortal(){
+    if(!state.empresa?.id||!portalState.email){
+      setStatus('portal-status','Informe seu e-mail novamente para solicitar um novo código.','erro');
+      reiniciarPortal(false);
+      return;
+    }
+
+    const btn=document.getElementById('btn-reenviar-codigo');
+    btn.disabled=true;
+    btn.textContent='Reenviando...';
+    setStatus('portal-status','Enviando um novo código para seu e-mail...','info');
+
+    try{
+      const r=await chamarFuncaoPortal('portal-solicitar-codigo',{
+        empresa_id:state.empresa.id,
+        email:portalState.email
+      });
+
+      document.getElementById('portal-codigo-input').value='';
+      setStatus(
+        'portal-status',
+        r.modo_envio==='teste'
+          ? 'Novo código gerado em modo de teste.'
+          : 'Novo código enviado para seu e-mail.',
+        r.modo_envio==='teste'?'info':'ok'
+      );
+      iniciarContagemReenvio(60);
+      document.getElementById('portal-codigo-input').focus();
+    }catch(err){
+      const msg=err?.message||'Não foi possível reenviar o código.';
+      setStatus('portal-status',msg,'erro');
+
+      if(String(msg).toLowerCase().includes('aguarde um minuto')){
+        iniciarContagemReenvio(60);
+      }else{
+        btn.disabled=false;
+        btn.textContent='Reenviar código';
+      }
+    }
+  }
+
+async function validarCodigoPortal(){const codigo=document.getElementById('portal-codigo-input').value.replace(/\D/g,'');if(codigo.length!==6){setStatus('portal-status','Digite o código de 6 dígitos.','erro');return}const btn=document.getElementById('btn-validar-codigo');btn.disabled=true;btn.textContent='Validando...';try{const r=await chamarFuncaoPortal('portal-validar-codigo',{empresa_id:state.empresa.id,email:portalState.email,codigo});if(r.precisa_selecionar_perfil){portalState.selecaoToken=r.selecao_token;renderizarPerfisPortal(r.perfis||[]);mostrarPortalTela('portal-perfis');setStatus('portal-status','E-mail verificado. Selecione o perfil que deseja acessar.','ok')}else if(r.token){salvarSessaoPortal(r.token,r.expira_em,r.cliente);await carregarMeusAgendamentos()}}catch(err){setStatus('portal-status',err.message,'erro')}finally{btn.disabled=false;btn.textContent='Continuar'}}
   function renderizarPerfisPortal(perfis){const area=document.getElementById('portal-lista-perfis');area.innerHTML='';perfis.forEach(p=>{const btn=document.createElement('button');btn.type='button';btn.className='portal-perfil';const iniciais=String(p.nome||'C').trim().split(/\s+/).slice(0,2).map(x=>x[0]).join('').toUpperCase();btn.innerHTML=`<div class="portal-avatar">${escapeHtml(iniciais)}</div><div class="portal-perfil-info"><strong>${escapeHtml(p.nome||'Cliente')}</strong><small>Acessar meus agendamentos</small></div><div class="portal-seta">›</div>`;btn.onclick=()=>selecionarPerfilPortal(p.cliente_id);area.appendChild(btn)})}
   async function selecionarPerfilPortal(clienteId){setStatus('portal-status','Abrindo perfil...','info');try{const r=await chamarFuncaoPortal('portal-selecionar-perfil',{empresa_id:state.empresa.id,selecao_token:portalState.selecaoToken,cliente_id:clienteId});portalState.selecaoToken=null;salvarSessaoPortal(r.token,r.expira_em,r.cliente);await carregarMeusAgendamentos()}catch(err){setStatus('portal-status',err.message,'erro')}}
   function salvarSessaoPortal(token,expira,cliente){sessionStorage.setItem('simpla_portal_empresa_id',state.empresa.id);sessionStorage.setItem('simpla_portal_token',token);sessionStorage.setItem('simpla_portal_expira_em',expira||'');sessionStorage.setItem('simpla_portal_cliente',JSON.stringify(cliente||{}))}
