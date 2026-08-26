@@ -142,7 +142,7 @@
   const params=new URLSearchParams(window.location.search);
   const slug=(params.get('empresa')||params.get('slug')||'simpla-barbearia').trim().toLowerCase();
   const state={empresa:null,profissional:null,servico:null,data:'',horario:'',nome:'',telefone:'',email:'',whatsappEmpresa:''};
-  const portalState={email:'',selecaoToken:null,reenvioTimer:null};
+  const portalState={email:'',selecaoToken:null,reenvioTimer:null,agendamentos:[]};
 
   function setStatus(id,texto='',tipo='info'){const el=document.getElementById(id);if(!el)return;el.className='status';el.textContent=texto;if(texto)el.classList.add('show',tipo)}
   function escapeHtml(valor){return String(valor??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#039;")}
@@ -278,8 +278,44 @@ async function validarCodigoPortal(){const codigo=document.getElementById('porta
   function renderizarPerfisPortal(perfis){const area=document.getElementById('portal-lista-perfis');area.innerHTML='';perfis.forEach(p=>{const btn=document.createElement('button');btn.type='button';btn.className='portal-perfil';const iniciais=String(p.nome||'C').trim().split(/\s+/).slice(0,2).map(x=>x[0]).join('').toUpperCase();btn.innerHTML=`<div class="portal-avatar">${escapeHtml(iniciais)}</div><div class="portal-perfil-info"><strong>${escapeHtml(p.nome||'Cliente')}</strong><small>Acessar meus agendamentos</small></div><div class="portal-seta">›</div>`;btn.onclick=()=>selecionarPerfilPortal(p.cliente_id);area.appendChild(btn)})}
   async function selecionarPerfilPortal(clienteId){setStatus('portal-status','Abrindo perfil...','info');try{const r=await chamarFuncaoPortal('portal-selecionar-perfil',{empresa_id:state.empresa.id,selecao_token:portalState.selecaoToken,cliente_id:clienteId});portalState.selecaoToken=null;salvarSessaoPortal(r.token,r.expira_em,r.cliente);await carregarMeusAgendamentos()}catch(err){setStatus('portal-status',err.message,'erro')}}
   function salvarSessaoPortal(token,expira,cliente){sessionStorage.setItem('simpla_portal_empresa_id',state.empresa.id);sessionStorage.setItem('simpla_portal_token',token);sessionStorage.setItem('simpla_portal_expira_em',expira||'');sessionStorage.setItem('simpla_portal_cliente',JSON.stringify(cliente||{}))}
-  async function carregarMeusAgendamentos(){const token=sessionStorage.getItem('simpla_portal_token');if(!token){reiniciarPortal();return}mostrarPortalTela('portal-agendamentos');document.getElementById('portal-lista-agendamentos').innerHTML='<div class="vazio">Carregando seus agendamentos...</div>';try{const r=await chamarFuncaoPortal('portal-meus-agendamentos',{empresa_id:state.empresa.id,token});document.getElementById('portal-cliente-nome').textContent=`Olá, ${r.cliente?.nome||'Cliente'}`;renderizarAgendamentosPortal(r.agendamentos||[]);setStatus('portal-status')}catch(err){sairPortal(false);setStatus('portal-status',err.message,'erro')}}
-  function renderizarAgendamentosPortal(lista){const area=document.getElementById('portal-lista-agendamentos');if(!lista.length){area.innerHTML='<div class="vazio">Você não possui agendamentos ativos no momento.</div>';return}area.innerHTML=lista.map(a=>{const st=String(a.status||'').toUpperCase(),classe=st==='AGENDADO'?'agendado':st==='SOLICITADO'?'solicitado':'outro';return`<div class="agendamento-card"><div class="agendamento-card-topo"><div class="agendamento-servico">${escapeHtml(a.servico_nome||'Agendamento')}</div><span class="badge ${classe}">${escapeHtml(st||'AGENDAMENTO')}</span></div><div class="agendamento-data">${dataPt(a.data)} às ${escapeHtml(String(a.horario||'').slice(0,5))}</div>${a.profissional_nome?`<div class="agendamento-profissional">Profissional: ${escapeHtml(a.profissional_nome)}</div>`:''}</div>`}).join('')}
+  async function carregarMeusAgendamentos(){const token=sessionStorage.getItem('simpla_portal_token');if(!token){reiniciarPortal();return}mostrarPortalTela('portal-agendamentos');document.getElementById('portal-lista-agendamentos').innerHTML='<div class="vazio">Carregando seus agendamentos...</div>';try{const r=await chamarFuncaoPortal('portal-meus-agendamentos',{empresa_id:state.empresa.id,token});document.getElementById('portal-cliente-nome').textContent=`Olá, ${r.cliente?.nome||'Cliente'}`;portalState.agendamentos=r.agendamentos||[];renderizarAgendamentosPortal(portalState.agendamentos);setStatus('portal-status')}catch(err){sairPortal(false);setStatus('portal-status',err.message,'erro')}}
+  function renderizarAgendamentosPortal(lista){const area=document.getElementById('portal-lista-agendamentos');if(!lista.length){area.innerHTML='<div class="vazio">Você não possui agendamentos ativos no momento.</div>';return}area.innerHTML=lista.map(a=>{const st=String(a.status||'').toUpperCase(),classe=st==='AGENDADO'?'agendado':st==='SOLICITADO'?'solicitado':'outro',podeCancelar=['AGENDADO','SOLICITADO'].includes(st);return`<div class="agendamento-card"><div class="agendamento-card-topo"><div class="agendamento-servico">${escapeHtml(a.servico_nome||'Agendamento')}</div><span class="badge ${classe}">${escapeHtml(st||'AGENDAMENTO')}</span></div><div class="agendamento-data">${dataPt(a.data)} às ${escapeHtml(String(a.horario||'').slice(0,5))}</div>${a.profissional_nome?`<div class="agendamento-profissional">Profissional: ${escapeHtml(a.profissional_nome)}</div>`:''}${podeCancelar?`<div style="margin-top:13px;padding-top:12px;border-top:1px solid var(--line);display:flex;justify-content:flex-end"><button type="button" class="btn btn-sec" style="min-height:38px;padding:8px 13px;color:var(--danger)" onclick="confirmarCancelamentoPortal('${a.id}')">Cancelar agendamento</button></div>`:''}</div>`}).join('')}
+
+  async function confirmarCancelamentoPortal(agendamentoId){
+    const a=(portalState.agendamentos||[]).find(x=>String(x.id)===String(agendamentoId));
+    if(!a)return;
+
+    const servico=a.servico_nome||'Agendamento';
+    const data=dataPt(a.data);
+    const horario=String(a.horario||'').slice(0,5);
+
+    const confirmou=window.confirm(
+      `Tem certeza que deseja cancelar este agendamento?\n\n${servico}\n${data} às ${horario}\n\nApós a confirmação, o horário será liberado novamente.`
+    );
+    if(!confirmou)return;
+
+    const token=sessionStorage.getItem('simpla_portal_token');
+    if(!token){
+      setStatus('portal-status','Sua sessão expirou. Faça a verificação novamente.','erro');
+      reiniciarPortal(false);
+      return;
+    }
+
+    setStatus('portal-status','Cancelando seu agendamento...','info');
+
+    try{
+      const r=await chamarFuncaoPortal('portal-cancelar-agendamento',{
+        empresa_id:state.empresa.id,
+        token,
+        agendamento_id:agendamentoId
+      });
+      setStatus('portal-status',r.mensagem||'Agendamento cancelado com sucesso.','ok');
+      await carregarMeusAgendamentos();
+      setStatus('portal-status','Agendamento cancelado com sucesso.','ok');
+    }catch(err){
+      setStatus('portal-status',err?.message||'Não foi possível cancelar o agendamento.','erro');
+    }
+  }
   function sairPortal(mostrarTela=true){['simpla_portal_empresa_id','simpla_portal_token','simpla_portal_expira_em','simpla_portal_cliente'].forEach(k=>sessionStorage.removeItem(k));portalState.selecaoToken=null;if(mostrarTela)reiniciarPortal()}
 
   document.addEventListener('DOMContentLoaded',iniciar);
