@@ -142,7 +142,7 @@
   const params=new URLSearchParams(window.location.search);
   const pathSlug=decodeURIComponent(window.location.pathname.split('/').filter(Boolean).pop()||'').trim().toLowerCase();
   const slug=(params.get('empresa')||params.get('slug')||pathSlug||'simpla-barbearia').trim().toLowerCase();
-  const state={empresa:null,profissional:null,servico:null,data:'',horario:'',nome:'',telefone:'',email:'',whatsappEmpresa:'',reagendamentoId:null,reagendamentoAnterior:null};
+  const state={empresa:null,profissional:null,servico:null,data:'',horario:'',nome:'',telefone:'',email:'',whatsappEmpresa:'',reagendamentoId:null,reagendamentoAnterior:null,identidadeConfirmadaOutraPessoa:''};
   const portalState={email:'',selecaoToken:null,reenvioTimer:null,agendamentos:[]};
 
   function setStatus(id,texto='',tipo='info'){const el=document.getElementById(id);if(!el)return;el.className='status';el.textContent=texto;if(texto)el.classList.add('show',tipo)}
@@ -164,7 +164,44 @@
 
   async function iniciar(){await carregarContatoPublico();document.getElementById('cliente-telefone').addEventListener('input',e=>e.target.value=formatarTelefoneInput(e.target.value));document.getElementById('portal-codigo-input').addEventListener('input',e=>e.target.value=e.target.value.replace(/\D/g,'').slice(0,6));try{const{data,error}=await db.rpc('agendamento_publico_empresa',{p_slug:slug});if(error)throw error;const empresa=Array.isArray(data)?data[0]:data;if(!empresa)throw new Error('Empresa não encontrada ou indisponível.');state.empresa=empresa;document.getElementById('empresa-nome').textContent=empresa.nome;document.getElementById('empresa-tipo').textContent=empresa.tipo_negocio||'';document.title=`Agendar | ${empresa.nome}`;setStatus('status-global')}catch(err){console.error(err);document.getElementById('empresa-nome').textContent='Agendamento indisponível';setStatus('status-global',err?.message||'Não foi possível carregar a empresa.','erro');document.querySelectorAll('button,input').forEach(el=>el.disabled=true)}}
 
-  function irParaProfissionais(){const nome=document.getElementById('cliente-nome').value.trim(),telefone=document.getElementById('cliente-telefone').value.trim(),email=document.getElementById('cliente-email').value.trim().toLowerCase(),numeros=telefone.replace(/\D/g,'');if(nome.length<2){setStatus('status-global','Informe seu nome para continuar.','erro');return}if(numeros.length<10||numeros.length>11){setStatus('status-global','Informe um telefone com DDD válido.','erro');return}if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){setStatus('status-global','Informe um e-mail válido ou deixe o campo em branco.','erro');return}Object.assign(state,{nome,telefone,email});setStatus('status-global');carregarProfissionais()}
+  async function irParaProfissionais(){
+    const nome=document.getElementById('cliente-nome').value.trim(),telefone=document.getElementById('cliente-telefone').value.trim(),email=document.getElementById('cliente-email').value.trim().toLowerCase(),numeros=telefone.replace(/\D/g,'');
+    if(nome.length<2){setStatus('status-global','Informe seu nome para continuar.','erro');return}
+    if(numeros.length<10||numeros.length>11){setStatus('status-global','Informe um telefone com DDD válido.','erro');return}
+    if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){setStatus('status-global','Informe um e-mail válido ou deixe o campo em branco.','erro');return}
+
+    const chaveIdentidade=`${nome.toUpperCase().replace(/\s+/g,' ').trim()}|${numeros}|${email}`;
+    setStatus('status-global','Validando seus dados...','info');
+
+    try{
+      const{data,error}=await db.rpc('agendamento_publico_validar_identidade',{
+        p_slug:slug,
+        p_cliente_nome:nome,
+        p_telefone:telefone,
+        p_email:email||null
+      });
+      if(error)throw error;
+
+      const registro=Array.isArray(data)?data[0]:data;
+      const situacao=String(registro?.situacao||'NOVO').toUpperCase();
+
+      if(situacao==='TELEFONE_EM_USO'&&state.identidadeConfirmadaOutraPessoa!==chaveIdentidade){
+        setStatus('status-global');
+        const continuar=window.confirm('Este telefone já está associado a outro cadastro nesta empresa.\n\nSe este agendamento é para outra pessoa que utiliza o mesmo telefone, clique em OK.\n\nSe você deseja corrigir o nome, telefone ou e-mail informado, clique em Cancelar.');
+        if(!continuar){setStatus('status-global','Revise os dados antes de continuar.','info');return}
+        state.identidadeConfirmadaOutraPessoa=chaveIdentidade;
+      }else if(situacao!=='TELEFONE_EM_USO'){
+        state.identidadeConfirmadaOutraPessoa='';
+      }
+
+      Object.assign(state,{nome,telefone,email});
+      setStatus('status-global');
+      carregarProfissionais();
+    }catch(err){
+      console.error(err);
+      setStatus('status-global',err?.message||'Não foi possível validar seus dados. Tente novamente.','erro');
+    }
+  }
   async function carregarProfissionais(){mostrarEtapa(2);const area=document.getElementById('lista-profissionais');area.innerHTML='<div class="vazio" style="grid-column:1/-1">Carregando profissionais...</div>';document.getElementById('btn-profissional').disabled=true;state.profissional=null;try{const{data,error}=await db.rpc('agendamento_publico_profissionais',{p_slug:slug});if(error)throw error;const lista=data||[];if(!lista.length){area.innerHTML='<div class="vazio" style="grid-column:1/-1">Nenhum profissional disponível para agendamento.</div>';return}area.innerHTML='';lista.forEach(p=>{const btn=document.createElement('button');btn.type='button';btn.className='opcao';btn.innerHTML=`<strong>${escapeHtml(p.nome)}</strong><small>Ver serviços e agenda</small>`;btn.onclick=()=>{area.querySelectorAll('.opcao').forEach(x=>x.classList.remove('selecionada'));btn.classList.add('selecionada');state.profissional=p;document.getElementById('btn-profissional').disabled=false};area.appendChild(btn)})}catch(err){area.innerHTML=`<div class="vazio" style="grid-column:1/-1;color:#c53030">${escapeHtml(err?.message||'Erro ao carregar profissionais.')}</div>`}}
   function irParaServicos(){if(state.profissional)carregarServicos()}
   async function carregarServicos(){mostrarEtapa(3);const area=document.getElementById('lista-servicos');area.innerHTML='<div class="vazio" style="grid-column:1/-1">Carregando serviços...</div>';document.getElementById('btn-servico').disabled=true;state.servico=null;try{const{data,error}=await db.rpc('agendamento_publico_servicos_profissional',{p_slug:slug,p_profissional_id:state.profissional.id});if(error)throw error;const lista=data||[];if(!lista.length){area.innerHTML='<div class="vazio" style="grid-column:1/-1">Nenhum serviço disponível para este profissional.</div>';return}area.innerHTML='';lista.forEach(s=>{const btn=document.createElement('button');btn.type='button';btn.className='opcao';btn.innerHTML=`<strong>${escapeHtml(s.nome)}</strong><small>${moeda(s.preco)} • ${Number(s.duracao_min)} min</small>`;btn.onclick=()=>{area.querySelectorAll('.opcao').forEach(x=>x.classList.remove('selecionada'));btn.classList.add('selecionada');state.servico=s;document.getElementById('btn-servico').disabled=false};area.appendChild(btn)})}catch(err){area.innerHTML=`<div class="vazio" style="grid-column:1/-1;color:#c53030">${escapeHtml(err?.message||'Erro ao carregar serviços.')}</div>`}}
