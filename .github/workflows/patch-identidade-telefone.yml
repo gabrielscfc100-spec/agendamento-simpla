@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/patch-identidade-telefone.yml'
+      - 'tools/patch-identidade-telefone.py'
 
 permissions:
   contents: write
