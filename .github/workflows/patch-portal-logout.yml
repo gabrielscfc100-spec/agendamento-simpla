@@ -1,0 +1,36 @@
+name: Ativar logout real do portal
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-portal-logout.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Aplicar patch
+        run: python tools/patch-portal-logout.py
+
+      - name: Validar alteração
+        run: |
+          grep -q "portal-sair" index.html
+          grep -q "Não foi possível revogar a sessão no servidor" index.html
+          git diff --check
+
+      - name: Commit e limpeza
+        run: |
+          rm -f tools/patch-portal-logout.py .github/workflows/patch-portal-logout.yml
+          rmdir tools 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: revogar sessao ao sair do portal"
+          git push
